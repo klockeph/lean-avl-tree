@@ -1,0 +1,15 @@
+name = "avl_tree"
+version = "0.1.0"
+defaultTargets = ["avl_tree"]
+
+[[lean_lib]]
+name = "AvlTree"
+
+[[lean_exe]]
+name = "avl_tree"
+root = "Main"
+
+[[require]]
+name = "batteries"
+scope = "leanprover-community"
+rev = "main"
