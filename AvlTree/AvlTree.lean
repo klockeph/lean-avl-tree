@@ -1,4 +1,8 @@
--- import Batteries.Util.ProofWanted
+/-
+A very WIP implementation of AVL Trees with dependent Types in Lean4.
+I used https://fedelebron.com/compile-time-invariants-in-haskell as an inspiration.
+-/
+set_option eval.type true
 
 inductive AVLNode (α : Type) : Nat → Type where
   | nil : AVLNode α 0
@@ -6,9 +10,6 @@ inductive AVLNode (α : Type) : Nat → Type where
   | leftie : α → AVLNode α (n + 1) → AVLNode α n → AVLNode α (n + 2)
   | rightie : α → AVLNode α n → AVLNode α (n + 1) → AVLNode α (n + 2)
 deriving Repr, BEq
-
-
-set_option eval.type true
 
 #eval AVLNode.balanced 3 AVLNode.nil AVLNode.nil
 #eval AVLNode.leftie 3 (AVLNode.balanced 2 AVLNode.nil AVLNode.nil) AVLNode.nil
@@ -118,3 +119,91 @@ theorem go_right_up [BEq α] (z : Zipper α)
     injection h1 with h_new_z
     rw [h_new_z]
     dsimp [Zipper.go_up]
+
+def AVLNode.left_child : (AVLNode α n) → Option ((m : Nat) × AVLNode α m)
+  | @AVLNode.balanced _ m _ l _ => some ⟨m, l⟩
+  | @AVLNode.leftie _ m _ l _ => some ⟨m + 1, l⟩
+  | @AVLNode.rightie _ m _ l _ => some ⟨m, l⟩
+  | .nil => none
+
+def AVLNode.right_child : (AVLNode α n) → Option ((m : Nat) × AVLNode α m)
+  | @AVLNode.balanced _ m _ _ r => some ⟨m, r⟩
+  | @AVLNode.leftie _ m _ _ r => some ⟨m, r⟩
+  | @AVLNode.rightie _ m _ _ r => some ⟨m + 1, r⟩
+  | .nil => none
+
+def AVLNode.node_count : (AVLNode α n) → Nat
+  | .nil => 1
+  | .balanced _ l r => 1 + l.node_count + r.node_count
+  | .leftie _ l r => 1 + l.node_count + r.node_count
+  | .rightie _ l r => 1 + l.node_count + r.node_count
+
+-- Actually not required but it's nice to have I guess.
+theorem zero_lt_node_count (t : AVLNode α n) : 0 < t.node_count := by
+  induction t
+  . simp[AVLNode.node_count]
+  all_goals
+  rename_i a r l l_ih rih
+  simp[AVLNode.node_count, Nat.add_pos_iff_pos_or_pos]
+
+theorem left_child_smaller (t : AVLNode α n) {m : Nat} {child : AVLNode α m}
+  (h : some ⟨m, child⟩ = t.left_child) : child.node_count < t.node_count := by
+  dsimp[AVLNode.left_child] at h
+  cases t
+  . simp_all
+  all_goals
+  rename_i l r
+  injection h with h_child
+  cases h_child
+  simp_all[AVLNode.node_count]
+  rw [Nat.add_comm 1, Nat.add_assoc]
+  apply Nat.lt_add_of_pos_right
+  rw [Nat.add_comm]
+  simp only [Nat.zero_lt_succ]
+
+theorem right_child_smaller (t : AVLNode α n) {m : Nat} {child : AVLNode α m}
+  (h : some ⟨m, child⟩ = t.right_child) : child.node_count < t.node_count := by
+  dsimp[AVLNode.right_child] at h
+  cases t
+  . simp_all
+  all_goals
+  rename_i l r
+  injection h with h_child
+  cases h_child
+  simp_all[AVLNode.node_count]
+  rw [Nat.add_comm]
+  simp only [Nat.zero_lt_succ]
+
+
+-- TODO: Proofs that Zipper.go_left / go_right goes into left_child or right_child
+
+structure AVLTree α where
+  node: (AVLNode n α)
+
+/-
+TODO: We define this later, once we have Zipper.zip_to and rotations
+For now it was just interesting to see that we can actually define things on AVLTree without knowing n
+
+def AVLTree.insert (tree: AVLTree α) : AVLTree α
+  := sorry
+-/
+
+def Zipper.value? : (z : Zipper α) → Option α
+  | {tree, ..} => match tree with
+    | .balanced x _ _ => x
+    | .rightie x _ _ => x
+    | .leftie x _ _ => x
+    | .nil => none
+
+/-
+TODO: This lacks termination proof, potentially delivered by the TODO above.
+
+def Zipper.zip_to [Ord α] (a : α) (z : Zipper α) : Option (Zipper α) :=
+  if let some x := z.value? then
+    match compare a x with
+    | Ordering.lt => Zipper.zip_to a =<< z.go_left
+    | Ordering.gt => Zipper.zip_to a =<< z.go_right
+    | Ordering.eq => some z
+  else none
+termination_by z.tree.node_count
+-/
