@@ -18,7 +18,6 @@ deriving Repr, BEq
 #eval AVLNode.rightie 3 AVLNode.nil (AVLNode.balanced 2 AVLNode.nil AVLNode.nil)
 #eval @AVLNode.rightie Nat 0 3 AVLNode.nil (AVLNode.balanced 2 AVLNode.nil AVLNode.nil)
 
-
 -- A Context n a means a traversal from a root of an AVL Tree of height n,
 -- whose non-nil nodes have values of type a, to some subtree.
 -- The index 'n' is the height of the subtree *currently in the hole*.
@@ -120,6 +119,96 @@ theorem go_right_up [BEq α] (z : Zipper α)
     rw [h_new_z]
     dsimp [Zipper.go_up]
 
+
+def AVLNode.node_count : (AVLNode α n) → Nat
+  | .nil => 1
+  | .balanced _ l r => 1 + l.node_count + r.node_count
+  | .leftie _ l r => 1 + l.node_count + r.node_count
+  | .rightie _ l r => 1 + l.node_count + r.node_count
+
+theorem go_left_count_lt (z : Zipper α)
+  (h : some lz = z.go_left)
+  : lz.tree.node_count < z.tree.node_count := by
+  cases z with | mk n tree ctx
+  cases tree
+  all_goals
+  simp_all[Zipper.go_left]
+  all_goals
+  rename_i l r
+  rw[h]
+  simp_all[AVLNode.node_count]
+  rw [Nat.add_comm 1, Nat.add_assoc]
+  apply Nat.lt_add_of_pos_right
+  rw [Nat.add_comm]
+  simp only [Nat.zero_lt_succ]
+
+
+theorem go_right_count_lt (z : Zipper α)
+  (h : some rz = z.go_right)
+  : rz.tree.node_count < z.tree.node_count := by
+  cases z with | mk n tree ctx
+  cases tree
+  all_goals
+  simp_all[Zipper.go_right]
+  all_goals
+  rename_i l r
+  rw[h]
+  simp_all[AVLNode.node_count]
+  rw [Nat.add_comm]
+  simp only [Nat.zero_lt_succ]
+
+
+structure AVLTree α where
+  node: (AVLNode n α)
+
+/-
+TODO: We define this later, once we have Zipper.zip_to and rotations
+For now it was just interesting to see that we can actually define things on AVLTree without knowing n
+
+def AVLTree.insert (tree: AVLTree α) : AVLTree α
+  := sorry
+-/
+
+def Zipper.value? : (z : Zipper α) → Option α
+  | {tree, ..} => match tree with
+    | .balanced x _ _ => x
+    | .rightie x _ _ => x
+    | .leftie x _ _ => x
+    | .nil => none
+
+def Zipper.zip_to {α} [Ord α] (a : α) (z : Zipper α) : Option (Zipper α) :=
+  if let some x := z.value? then
+    match compare a x with
+    | Ordering.lt => match h: z.go_left with
+      | none => none
+      | some lz =>
+        have : lz.tree.node_count < z.tree.node_count := by simp_all[go_left_count_lt]
+        lz.zip_to a
+    | Ordering.gt => match h: z.go_right with
+      | none => none
+      | some rz =>
+        have : rz.tree.node_count < z.tree.node_count := by simp_all[go_right_count_lt]
+        rz.zip_to a
+    | Ordering.eq => some z
+  else none
+termination_by z.tree.node_count
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-- Theorems that were not required but too nice to throw away...
+-- And their accompanying functions :)
+
 def AVLNode.left_child : (AVLNode α n) → Option ((m : Nat) × AVLNode α m)
   | @AVLNode.balanced _ m _ l _ => some ⟨m, l⟩
   | @AVLNode.leftie _ m _ l _ => some ⟨m + 1, l⟩
@@ -132,13 +221,6 @@ def AVLNode.right_child : (AVLNode α n) → Option ((m : Nat) × AVLNode α m)
   | @AVLNode.rightie _ m _ _ r => some ⟨m + 1, r⟩
   | .nil => none
 
-def AVLNode.node_count : (AVLNode α n) → Nat
-  | .nil => 1
-  | .balanced _ l r => 1 + l.node_count + r.node_count
-  | .leftie _ l r => 1 + l.node_count + r.node_count
-  | .rightie _ l r => 1 + l.node_count + r.node_count
-
--- Actually not required but it's nice to have I guess.
 theorem zero_lt_node_count (t : AVLNode α n) : 0 < t.node_count := by
   induction t
   . simp[AVLNode.node_count]
@@ -174,36 +256,54 @@ theorem right_child_smaller (t : AVLNode α n) {m : Nat} {child : AVLNode α m}
   rw [Nat.add_comm]
   simp only [Nat.zero_lt_succ]
 
+theorem go_left_left_n (z : Zipper α)
+  (h₁: some new_z = z.go_left) (h₂ : some lcp = z.tree.left_child) :
+   lcp.1 = new_z.n :=
+  by
+    unfold Zipper.go_left at h₁
+    cases z with | mk n tree ctx
+    simp_all
+    cases tree
+    . simp_all
+    all_goals
+    rename_i n a t₁ t₂
+    simp_all
+    injection h₂ with new_z
+    rw[new_z]
 
--- TODO: Proofs that Zipper.go_left / go_right goes into left_child or right_child
+theorem go_left_left_child [BEq α] (z : Zipper α) (new_z : Zipper α) (lcp : (m : Nat) × AVLNode α m)
+  (h₁: some new_z = z.go_left) (h₂ : some lcp = z.tree.left_child) (h₃ : lcp.fst = new_z.n)
+  : (h₃ ▸ lcp.2 = new_z.tree) := by
+    unfold Zipper.go_left at h₁
+    cases z with | mk n tree ctx
+    cases tree
+    . simp_all
+    all_goals
+    cases h₁; cases h₂; cases h₃
+    simp_all
 
-structure AVLTree α where
-  node: (AVLNode n α)
+theorem go_right_right_n (z : Zipper α)
+  (h₁: some new_z = z.go_right) (h₂ : some lcp = z.tree.right_child) :
+   lcp.1 = new_z.n :=
+  by
+    unfold Zipper.go_right at h₁
+    cases z with | mk n tree ctx
+    simp_all
+    cases tree
+    . simp_all
+    all_goals
+    rename_i n a t₁ t₂
+    simp_all
+    injection h₂ with new_z
+    rw[new_z]
 
-/-
-TODO: We define this later, once we have Zipper.zip_to and rotations
-For now it was just interesting to see that we can actually define things on AVLTree without knowing n
-
-def AVLTree.insert (tree: AVLTree α) : AVLTree α
-  := sorry
--/
-
-def Zipper.value? : (z : Zipper α) → Option α
-  | {tree, ..} => match tree with
-    | .balanced x _ _ => x
-    | .rightie x _ _ => x
-    | .leftie x _ _ => x
-    | .nil => none
-
-/-
-TODO: This lacks termination proof, potentially delivered by the TODO above.
-
-def Zipper.zip_to [Ord α] (a : α) (z : Zipper α) : Option (Zipper α) :=
-  if let some x := z.value? then
-    match compare a x with
-    | Ordering.lt => Zipper.zip_to a =<< z.go_left
-    | Ordering.gt => Zipper.zip_to a =<< z.go_right
-    | Ordering.eq => some z
-  else none
-termination_by z.tree.node_count
--/
+theorem go_right_right_child [BEq α] (z : Zipper α) (new_z : Zipper α) (lcp : (m : Nat) × AVLNode α m)
+  (h₁: some new_z = z.go_right) (h₂ : some lcp = z.tree.right_child) (h₃ : lcp.fst = new_z.n)
+  : (h₃ ▸ lcp.2 = new_z.tree) := by
+    unfold Zipper.go_right at h₁
+    cases z with | mk n tree ctx
+    cases tree
+    . simp_all
+    all_goals
+    cases h₁; cases h₂; cases h₃
+    simp_all
