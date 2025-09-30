@@ -1,3 +1,5 @@
+import Aesop
+
 /-
 A very WIP implementation of AVL Trees with dependent Types in Lean4.
 I used https://fedelebron.com/compile-time-invariants-in-haskell as an inspiration.
@@ -25,12 +27,12 @@ inductive Context (α : Type) : Nat → Type where
   -- The root context, where every traversal of an AVL tree starts.
   | root : Context α n
   -- A balanced context.
-  | BLC : (val : α) → (other : AVLNode α n) → Context α (n + 1) → Context α n
-  | BRC : (val : α) → (other : AVLNode α n) → Context α (n + 1) → Context α n
-  -- A leftie context, where we've taken the right branch of the subtree.
-  | LRC : (val : α) → (left : AVLNode α (n + 1)) → Context α (n + 2) → Context α n
+  | BLC : (val : α) → (right : AVLNode α n) → Context α (n + 1) → Context α n
+  | BRC : (val : α) → (left : AVLNode α n) → Context α (n + 1) → Context α n
   -- A leftie context, where we've taken the left branch of the subtree.
   | LLC : (val : α) → (right : AVLNode α n) → Context α (n + 2) → Context α (n + 1)
+  -- A leftie context, where we've taken the right branch of the subtree.
+  | LRC : (val : α) → (left : AVLNode α (n + 1)) → Context α (n + 2) → Context α n
   -- A rightie context, where we've taken the left branch of the subtree.
   | RLC : (val : α) → (right : AVLNode α (n + 1)) → Context α (n + 2) → Context α n
   -- A rightie context, where we've taken the right branch of the subtree.
@@ -47,7 +49,6 @@ deriving Repr, BEq
 #eval Zipper.mk 1 (AVLNode.balanced 3 AVLNode.nil AVLNode.nil) (Context.root)
 #eval Zipper.mk 0 (AVLNode.nil) (Context.BLC 3 (AVLNode.nil) Context.root)
 
-#print Zipper.mk
 
 def Zipper.go_left {α : Type} (z : Zipper α) : Option (Zipper α) :=
   let {tree, ctx, ..} := z
@@ -126,6 +127,18 @@ def AVLNode.node_count : (AVLNode α n) → Nat
   | .leftie _ l r => 1 + l.node_count + r.node_count
   | .rightie _ l r => 1 + l.node_count + r.node_count
 
+
+theorem avl_node_count_gt_0 (t : AVLNode α n) : t.node_count > 0 := by
+  induction t
+  simp_all[AVLNode.node_count]
+  all_goals
+  rename_i _ _ t1 t2 ih1 ih2
+  simp_all[AVLNode.node_count]
+  rw [Nat.add_assoc]
+  rw [Nat.add_comm]
+  simp only [Nat.zero_lt_succ]
+
+
 theorem go_left_count_lt (z : Zipper α)
   (h : some lz = z.go_left)
   : lz.tree.node_count < z.tree.node_count := by
@@ -158,17 +171,6 @@ theorem go_right_count_lt (z : Zipper α)
   simp only [Nat.zero_lt_succ]
 
 
-structure AVLTree α where
-  node: (AVLNode n α)
-
-/-
-TODO: We define this later, once we have Zipper.zip_to and rotations
-For now it was just interesting to see that we can actually define things on AVLTree without knowing n
-
-def AVLTree.insert (tree: AVLTree α) : AVLTree α
-  := sorry
--/
-
 def Zipper.value? : (z : Zipper α) → Option α
   | {tree, ..} => match tree with
     | .balanced x _ _ => x
@@ -176,25 +178,77 @@ def Zipper.value? : (z : Zipper α) → Option α
     | .leftie x _ _ => x
     | .nil => none
 
-def Zipper.zip_to {α} [Ord α] (a : α) (z : Zipper α) : Option (Zipper α) :=
+
+-- Zips to the element or to the Nil node where it should be inserted
+def Zipper.zip_to [Ord α] (a : α) (z : Zipper α) : Zipper α :=
   if let some x := z.value? then
     match compare a x with
     | Ordering.lt => match h: z.go_left with
-      | none => none
+      | none => z
       | some lz =>
         have : lz.tree.node_count < z.tree.node_count := by simp_all[go_left_count_lt]
         lz.zip_to a
     | Ordering.gt => match h: z.go_right with
-      | none => none
+      | none => z
       | some rz =>
         have : rz.tree.node_count < z.tree.node_count := by simp_all[go_right_count_lt]
         rz.zip_to a
-    | Ordering.eq => some z
-  else none
+    | Ordering.eq => z
+  else z
 termination_by z.tree.node_count
 
 
+structure AVLTree α where
+  n : Nat
+  node: (AVLNode α n)
 
+def AVLTree.unzip (t : AVLTree α) : Zipper α :=
+  Zipper.mk t.n t.node Context.root
+
+def Context.node_count : (c: Context α n) → Nat
+  | .root => 0
+  | .BLC _ a b => a.node_count + b.node_count
+  | .BRC _ a b => a.node_count + b.node_count
+  | .LLC _ a b => a.node_count + b.node_count
+  | .LRC _ a b => a.node_count + b.node_count
+  | .RLC _ a b => a.node_count + b.node_count
+  | .RRC _ a b => a.node_count + b.node_count
+
+theorem zipper_ctx_nil_go_up (z : Zipper α) (h: z.ctx = Context.root)
+  : z.go_up = none := by
+  simp_all[Zipper.go_up]
+
+theorem zipper_go_up_ctx_node_count_lt (z : Zipper α) (h : some upper = z.go_up)
+  : upper.ctx.node_count < z.ctx.node_count := by
+  obtain ⟨n, tree, ctx⟩ := z
+  unfold Zipper.go_up at h
+  cases ctx
+  . simp_all
+  all_goals
+  rename_i val t a
+  simp_all[Context.node_count]
+  rw[h]
+  simp_all[avl_node_count_gt_0]
+
+
+def Zipper.zip_up : (z: Zipper α) → AVLTree α
+  | Zipper.mk n t .root => (AVLTree.mk n t)
+  | some_z => match c: some_z.go_up with
+    | some upper =>
+      have : upper.ctx.node_count < some_z.ctx.node_count := by simp_all[zipper_go_up_ctx_node_count_lt]
+      upper.zip_up
+    | none => (AVLTree.mk 0 .nil) -- it would be nicer to panic but AVLTree is not inhibited
+termination_by z => z.ctx.node_count
+
+/-
+TODO: We define this later, once we have rotations
+
+def AVLTree.insert [Ord α] (tree: AVLTree α) (a: α) : AVLTree α :=
+  match tree.unzip.zip_to a with
+  | Zipper n .nil ctx -> insert_and_fix (.balanced x .nil .nil) ctx
+  | _ -> tree
+
+-/
 
 
 

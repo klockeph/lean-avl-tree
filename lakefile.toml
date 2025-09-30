@@ -10,6 +10,5 @@ name = "avl_tree"
 root = "Main"
 
 [[require]]
-name = "batteries"
+name = "mathlib"
 scope = "leanprover-community"
-rev = "main"
