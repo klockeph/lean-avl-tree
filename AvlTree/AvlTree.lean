@@ -206,6 +206,9 @@ structure AVLTree α where
 instance : Inhabited (AVLTree α) where
   default := AVLTree.mk 0 .nil
 
+-- A constructor for convenience
+def AVLTree.from_node {α n} : (node: AVLNode α n) → AVLTree α := AVLTree.mk n
+
 def AVLTree.unzip (t : AVLTree α) : Zipper α :=
   Zipper.mk t.n t.node Context.root
 
@@ -244,23 +247,103 @@ def Zipper.zip_up : (z: Zipper α) → AVLTree α
     | none => panic! "Encountered invalid Zipper"
 termination_by z => z.ctx.node_count
 
+
 /-
-TODO: We define this later, once we have rotations
+@ctx is a "hole where subtree of depth n fits"
+@node is a tree of depth n+1
+-/
+def insert_and_fix (node : AVLNode α n.succ) (ctx: Context α n) : AVLTree α :=
+  match ctx with
+  | .root => AVLTree.from_node node
+  | .LRC val l ctx => Zipper.mk n.succ.succ (.balanced val l node) ctx |>.zip_up
+  | .RLC val r ctx => Zipper.mk n.succ.succ (.balanced val node r) ctx |>.zip_up
+  | @Context.LLC α nc val r ctx => match node with
+    | .leftie nval ll lr => Zipper.mk nc.succ.succ (.balanced nval ll (.balanced val lr r)) ctx |>.zip_up
+    | .balanced nval ll lr => insert_and_fix (.rightie nval ll (.leftie val lr r)) ctx
+    | .rightie nval ll lr =>
+      -- I have no idea why I need to match on nc and ignore what it matched to..
+      Zipper.mk nc.succ.succ (match nc, lr with
+        | _, .leftie x t1 t2 => .balanced x (.balanced nval ll t1) (.rightie val t2 r)
+        | _, .rightie x t1 t2 => .balanced x (.leftie nval ll t1) (.balanced val t2 r)
+        | _, .balanced x t1 t2 => .balanced x (.balanced nval ll t1) (.balanced val t2 r)
+        : AVLNode α (nc + 2)
+      ) ctx |>.zip_up
+  | @Context.RRC α nc val l ctx => match node with
+    | .rightie nval rl rr => Zipper.mk nc.succ.succ (.balanced nval (.balanced val l rl) rr) ctx |>.zip_up
+    | .balanced nval rl rr => insert_and_fix (.leftie nval (.rightie val l rl) rr) ctx
+    | .leftie nval rl rr =>
+      -- Same here.
+      Zipper.mk nc.succ.succ (match nc, rl with
+        | _, .rightie x t1 t2 => .balanced x (.leftie val l t1) (.balanced nval t2 rr)
+        | _, .leftie x t1 t2 => .balanced x (.balanced val l t1) (.rightie nval t2 rr)
+        | _, .balanced x t1 t2 => .balanced x (.balanced val l t1) (.balanced nval t2 rr)
+        : AVLNode α (nc + 2)
+      ) ctx |>.zip_up
+  | .BLC val r ctx => insert_and_fix (.leftie val node r) ctx
+  | .BRC val l ctx => insert_and_fix (.rightie val l node) ctx
 
 def AVLTree.insert [Ord α] (tree: AVLTree α) (a: α) : AVLTree α :=
   match tree.unzip.zip_to a with
-  | Zipper n .nil ctx -> insert_and_fix (.balanced x .nil .nil) ctx
-  | _ -> tree
-
--/
+  | (Zipper.mk 0 .nil ctx) => insert_and_fix (.balanced a .nil .nil) ctx
+  | _ => tree
 
 
+-- Trying out some different rotations
+-- Left-left:
+#eval AVLTree.mk 0 .nil |>.insert 3
+#eval AVLTree.mk 0 .nil |>.insert 3 |>.insert 2
+#eval AVLTree.mk 0 .nil |>.insert 3 |>.insert 2 |>.insert 1
 
+-- Right-right:
+#eval AVLTree.mk 0 .nil |>.insert 3
+#eval AVLTree.mk 0 .nil |>.insert 3 |>.insert 4
+#eval AVLTree.mk 0 .nil |>.insert 3 |>.insert 4 |>.insert 5
 
+-- Left-right:
+#eval AVLTree.mk 0 .nil |>.insert 3
+#eval AVLTree.mk 0 .nil |>.insert 3 |>.insert 1
+#eval AVLTree.mk 0 .nil |>.insert 3 |>.insert 1 |>.insert 2
 
+-- Right-left:
+#eval AVLTree.mk 0 .nil |>.insert 3
+#eval AVLTree.mk 0 .nil |>.insert 3 |>.insert 5
+#eval AVLTree.mk 0 .nil |>.insert 3 |>.insert 5 |>.insert 4
 
+-- ^^^ The above basically is a (insert-only) definition of a AVL Tree. ^^^
+-- Everything below are random convenience functions, helpers, and some ideas towards correctness proofs..
 
+-- probably not super efficient since the zipper "remembers" (and thus requires space for) the nodes it traversed.
+def AVLNode.contains [Ord α] (a: α) (node: AVLNode α n) : Bool :=
+  match Zipper.mk n node Context.root
+    |>.zip_to a
+    |>.value? with
+  | some _ => true
+  | _ => false
 
+def AVLNode.fold (f : β → α → β → β) (node: AVLNode α n) (acc : β) : β :=
+  match node with
+    | .nil => acc
+    | .balanced x l r => f (l.fold f acc) x (r.fold f acc)
+    | .leftie x l r => f (l.fold f acc) x (r.fold f acc)
+    | .rightie x l r => f (l.fold f acc) x (r.fold f acc)
+
+def AVLNode.to_list  (node: AVLNode α n) : List α :=
+  node.fold (fun x y z => x ++ [y] ++ z) []
+
+def AVLTree.to_list (tree: AVLTree α) : List α := tree.node.to_list
+
+#eval AVLTree.mk 0 .nil |>.insert 3 |>.insert 5 |>.insert 4 |>.insert 1 |>.to_list
+
+-- TODO: With this we could prove the ordering and set properties of an AVL Tree.
+
+def AVLNode.map (f : α → β) (node: AVLNode α n) : AVLNode β n :=
+  match node with
+    | .nil => .nil
+    | .balanced x l r => .balanced (f x) (l.map f) (r.map f)
+    | .leftie x l r => .leftie (f x) (l.map f) (r.map f)
+    | .rightie x l r => .rightie (f x) (l.map f) (r.map f)
+
+def AVLTree.map (f : α → β) (tree: AVLTree α) : AVLTree β := {tree with node := tree.node.map f}
 
 
 
