@@ -21,7 +21,7 @@ deriving Repr, BEq
 #eval @AVLNode.rightie Nat 0 3 AVLNode.nil (AVLNode.balanced 2 AVLNode.nil AVLNode.nil)
 
 -- A Context n a means a traversal from a root of an AVL Tree of height n,
--- whose non-nil nodes have values of type a, to some subtree.
+-- whose non-nil nodes have values of type α, to some subtree.
 -- The index 'n' is the height of the subtree *currently in the hole*.
 inductive Context (α : Type) : Nat → Type where
   -- The root context, where every traversal of an AVL tree starts.
@@ -56,7 +56,7 @@ def Zipper.go_left {α : Type} (z : Zipper α) : Option (Zipper α) :=
   | @AVLNode.balanced α n a l r => Zipper.mk n l (Context.BLC a r ctx)
   | @AVLNode.rightie α n a l r => Zipper.mk n l (Context.RLC a r ctx)
   | @AVLNode.leftie α n a l r => Zipper.mk n.succ l (Context.LLC a r ctx)
-  | _ => Option.none
+  | _ => none
 
 #eval (Zipper.mk 1 (AVLNode.balanced 3 AVLNode.nil AVLNode.nil) (Context.root)).go_left
 #eval (Zipper.mk 2 (AVLNode.leftie 3 (AVLNode.balanced 2 AVLNode.nil AVLNode.nil) AVLNode.nil) (Context.root)).go_left
@@ -202,6 +202,10 @@ structure AVLTree α where
   n : Nat
   node: (AVLNode α n)
 
+-- Useful if we want to panic! from a function that returns AVLTree.
+instance : Inhabited (AVLTree α) where
+  default := AVLTree.mk 0 .nil
+
 def AVLTree.unzip (t : AVLTree α) : Zipper α :=
   Zipper.mk t.n t.node Context.root
 
@@ -237,7 +241,7 @@ def Zipper.zip_up : (z: Zipper α) → AVLTree α
     | some upper =>
       have : upper.ctx.node_count < some_z.ctx.node_count := by simp_all[zipper_go_up_ctx_node_count_lt]
       upper.zip_up
-    | none => (AVLTree.mk 0 .nil) -- it would be nicer to panic but AVLTree is not inhibited
+    | none => panic! "Encountered invalid Zipper"
 termination_by z => z.ctx.node_count
 
 /-
@@ -279,7 +283,6 @@ theorem zero_lt_node_count (t : AVLNode α n) : 0 < t.node_count := by
   induction t
   . simp[AVLNode.node_count]
   all_goals
-  rename_i a r l l_ih rih
   simp[AVLNode.node_count, Nat.add_pos_iff_pos_or_pos]
 
 theorem left_child_smaller (t : AVLNode α n) {m : Nat} {child : AVLNode α m}
@@ -288,7 +291,6 @@ theorem left_child_smaller (t : AVLNode α n) {m : Nat} {child : AVLNode α m}
   cases t
   . simp_all
   all_goals
-  rename_i l r
   injection h with h_child
   cases h_child
   simp_all[AVLNode.node_count]
@@ -303,7 +305,6 @@ theorem right_child_smaller (t : AVLNode α n) {m : Nat} {child : AVLNode α m}
   cases t
   . simp_all
   all_goals
-  rename_i l r
   injection h with h_child
   cases h_child
   simp_all[AVLNode.node_count]
@@ -320,7 +321,6 @@ theorem go_left_left_n (z : Zipper α)
     cases tree
     . simp_all
     all_goals
-    rename_i n a t₁ t₂
     simp_all
     injection h₂ with new_z
     rw[new_z]
@@ -346,7 +346,6 @@ theorem go_right_right_n (z : Zipper α)
     cases tree
     . simp_all
     all_goals
-    rename_i n a t₁ t₂
     simp_all
     injection h₂ with new_z
     rw[new_z]
