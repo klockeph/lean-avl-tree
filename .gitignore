@@ -1,2 +1,4 @@
 /.lake
 .direnv/
+.claude/
+.mcp.json

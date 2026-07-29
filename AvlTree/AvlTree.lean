@@ -18,7 +18,7 @@ deriving Repr, BEq
 #eval @AVLNode.leftie Nat 0 3 (AVLNode.balanced 2 AVLNode.nil AVLNode.nil) AVLNode.nil
 
 #eval AVLNode.rightie 3 AVLNode.nil (AVLNode.balanced 2 AVLNode.nil AVLNode.nil)
-#eval @AVLNode.rightie Nat 0 3 AVLNode.nil (AVLNode.balanced 2 AVLNode.nil AVLNode.nil)
+#eval @AVLNode.rightie Nat 0 3 AVLNode.nil (@AVLNode.balanced Nat 0 2 AVLNode.nil AVLNode.nil)
 
 -- A Context n a means a traversal from a root of an AVL Tree of height n,
 -- whose non-nil nodes have values of type α, to some subtree.
@@ -121,11 +121,6 @@ theorem go_right_up (z : Zipper α)
     rw [h_new_z]
     dsimp [Zipper.go_up]
 
-def Zipper.value? : (z : Zipper α) → Option α
-  | {tree, ..} => match tree with
-    | .balanced x _ _ | .rightie x _ _ | .leftie x _ _ => x
-    | .nil => none
-
 theorem go_left_n_lt (z : Zipper α)
   (h : some lz = z.go_left)
   : lz.n < z.n := by
@@ -141,6 +136,11 @@ theorem go_right_n_lt (z : Zipper α)
   cases tree
   all_goals
   simp_all[Zipper.go_right]
+
+def Zipper.value? : (z : Zipper α) → Option α
+  | {tree, ..} => match tree with
+    | .balanced x _ _ | .rightie x _ _ | .leftie x _ _ => x
+    | .nil => none
 
 -- Zips to the element or to the Nil node where it should be inserted
 def Zipper.zip_to [Ord α] (a : α) (z : Zipper α) : Zipper α :=
@@ -184,21 +184,6 @@ def Context.depth : (c: Context α n) → Nat
   | .RLC _ _ c => 1 + c.depth
   | .RRC _ _ c => 1 + c.depth
 
-theorem zipper_ctx_nil_go_up (z : Zipper α) (h: z.ctx = Context.root)
-  : z.go_up = none := by
-  simp_all[Zipper.go_up]
-
--- Could probably be used to prove the panic in `zip_up` is unreachable, but I don't know how to do that yet.
-theorem zipper_go_up_nil_ctx_root (z : Zipper α) (h: z.go_up = none)
-  : z.ctx = Context.root := by
-  obtain ⟨n, tree, ctx⟩ := z
-  unfold Zipper.go_up at h
-  cases ctx
-  . simp_all
-  all_goals
-    rename_i val t a
-    simp_all
-
 theorem zipper_go_up_ctx_depth_lt (z : Zipper α) (h : some upper = z.go_up)
   : upper.ctx.depth < z.ctx.depth := by
   obtain ⟨n, tree, ctx⟩ := z
@@ -211,17 +196,13 @@ theorem zipper_go_up_ctx_depth_lt (z : Zipper α) (h : some upper = z.go_up)
     rw[h]
     simp_all
 
--- The panic here can't really be reached since we already handle the `root` case.
--- There's probably a way to prove that it cannot happen, but I don't know how to do that yet.
-def Zipper.zip_up : (z: Zipper α) → AVLTree α
-  | Zipper.mk n t .root => (AVLTree.mk n t)
-  | some_z => match c: some_z.go_up with
+def Zipper.zip_up (z : Zipper α) : AVLTree α :=
+    match c: z.go_up with
     | some upper =>
-      have : upper.ctx.depth < some_z.ctx.depth := by simp_all[zipper_go_up_ctx_depth_lt]
+      have : upper.ctx.depth < z.ctx.depth := by simp_all[zipper_go_up_ctx_depth_lt]
       upper.zip_up
-    | none => panic! "Encountered invalid Zipper"
-termination_by z => z.ctx.depth
-
+    | none => AVLTree.mk z.n z.tree
+termination_by z.ctx.depth
 
 /-
 `node` is one level taller than what `ctx` expects (height n+1 in a height-n hole).
