@@ -96,6 +96,7 @@ def Zipper.go_up {α : Type} (z : Zipper α) : Option (Zipper α) :=
 #eval (Zipper.mk 2 (@AVLNode.rightie Nat 0 3 AVLNode.nil (AVLNode.balanced 2 AVLNode.nil AVLNode.nil)) (Context.root)).go_right >>= Zipper.go_up
 
 
+-- If we first go left and then go up, we end up back where we started.
 theorem go_left_up (z : Zipper α)
   (h1 : some new_z = z.go_left) : new_z.go_up = z :=
   by
@@ -108,7 +109,7 @@ theorem go_left_up (z : Zipper α)
     rw [h_new_z]
     dsimp [Zipper.go_up]
 
-
+-- If we first go right and then go up, we end up back where we started.
 theorem go_right_up (z : Zipper α)
   (h1 : some new_z = z.go_right) : new_z.go_up = z := by
   obtain ⟨n, tree, ctx⟩ := z
@@ -119,7 +120,6 @@ theorem go_right_up (z : Zipper α)
     injection h1 with h_new_z
     rw [h_new_z]
     dsimp [Zipper.go_up]
-
 
 def Zipper.value? : (z : Zipper α) → Option α
   | {tree, ..} => match tree with
@@ -188,6 +188,17 @@ theorem zipper_ctx_nil_go_up (z : Zipper α) (h: z.ctx = Context.root)
   : z.go_up = none := by
   simp_all[Zipper.go_up]
 
+-- Could probably be used to prove the panic in `zip_up` is unreachable, but I don't know how to do that yet.
+theorem zipper_go_up_nil_ctx_root (z : Zipper α) (h: z.go_up = none)
+  : z.ctx = Context.root := by
+  obtain ⟨n, tree, ctx⟩ := z
+  unfold Zipper.go_up at h
+  cases ctx
+  . simp_all
+  all_goals
+    rename_i val t a
+    simp_all
+
 theorem zipper_go_up_ctx_depth_lt (z : Zipper α) (h : some upper = z.go_up)
   : upper.ctx.depth < z.ctx.depth := by
   obtain ⟨n, tree, ctx⟩ := z
@@ -213,38 +224,97 @@ termination_by z => z.ctx.depth
 
 
 /-
-@ctx is a "hole where subtree of depth n fits"
-@node is a tree of depth n+1
+`node` is one level taller than what `ctx` expects (height n+1 in a height-n hole).
+We walk up the context rebalancing as needed. Cases fall into three groups:
+
+  (1) Local fix — the growth resolves an existing imbalance; height stops increasing.
+  (2) Propagate — a balanced node becomes tilted; height still grew, so recurse up.
+  (3) Rotate — an already-tilted node reaches a height diff of 2; rotate and stop.
 -/
 def insert_and_fix (node : AVLNode α n.succ) (ctx: Context α n) : AVLTree α :=
   match ctx with
+  -- Base case: the tree was empty; the inserted node becomes the root.
   | .root => AVLTree.from_node node
+
+  -- (1) Was a leftie; inserted into the *shorter* right child, which now matches the
+  --     left. The leftie becomes balanced; overall height is unchanged.
   | .LRC val l ctx => Zipper.mk n.succ.succ (.balanced val l node) ctx |>.zip_up
+
+  -- (1) Symmetric: was a rightie; inserted into the shorter left child.
   | .RLC val r ctx => Zipper.mk n.succ.succ (.balanced val node r) ctx |>.zip_up
+
+  -- (2) Was balanced; inserted into left child, which is now taller → becomes a leftie.
+  --     Height grew by one, so keep fixing upward.
+  | .BLC val r ctx => insert_and_fix (.leftie val node r) ctx
+
+  -- (2) Symmetric: was balanced; inserted into right child → becomes a rightie.
+  | .BRC val l ctx => insert_and_fix (.rightie val l node) ctx
+
+  -- (3) Was a leftie (left already taller); inserted into the *left* child again.
+  --     Height diff is now 2 — rebalance with one or two rotations.
   | @Context.LLC α nc val r ctx => match node with
-    | .leftie nval ll lr => Zipper.mk nc.succ.succ (.balanced nval ll (.balanced val lr r)) ctx |>.zip_up
-    | .balanced nval ll lr => insert_and_fix (.rightie nval ll (.leftie val lr r)) ctx
+
+    -- Left-left: single right rotation.
+    --       P (leftie)         L (balanced)
+    --      / \                / \
+    --     L   r      →      LL   P
+    --    / \                    / \
+    --   LL  LR                LR   r
+    | .leftie nval ll lr =>
+      Zipper.mk nc.succ.succ (.balanced nval ll (.balanced val lr r)) ctx |>.zip_up
+
+    -- Left-right: double rotation (left on L, then right on P).
+    -- The three sub-cases distribute LR's children depending on LR's own balance.
+    --       P (leftie)              LR (balanced)
+    --      / \                     /              \
+    --     L   r      →           L                 P
+    --    / \                    / \               / \
+    --   LL  LR                LL  t1            t2   r
+    --      / \
+    --     t1  t2
     | .rightie nval ll lr =>
-      -- I have no idea why I need to match on nc and ignore what it matched to..
+      -- Matching on `nc` (and ignoring it with `_`) is required for the elaborator
+      -- to assign the correct index (nc + 2) to the result type.
       Zipper.mk nc.succ.succ (match nc, lr with
         | _, .leftie x t1 t2 => .balanced x (.balanced nval ll t1) (.rightie val t2 r)
         | _, .rightie x t1 t2 => .balanced x (.leftie nval ll t1) (.balanced val t2 r)
         | _, .balanced x t1 t2 => .balanced x (.balanced nval ll t1) (.balanced val t2 r)
         : AVLNode α (nc + 2)
       ) ctx |>.zip_up
+
+    -- Likely unreachable via AVLTree.insert: all recursive calls pass leftie/rightie nodes,
+    -- and the initial balanced node (height 1) cannot reach LLC. Reachable if called directly.
+    -- Required by exhaustiveness.
+    --
+    -- We cannot represent a height-diff-2 node in AVLNode, so we must reorganize the five
+    -- pieces into a valid shape before propagating up. A right rotation gives:
+    --   rightie nval ll (leftie val lr r)
+    -- The result is a valid AVL node but still one taller than the parent context expects,
+    -- so we recurse. Note the result is a *rightie* (not leftie): after rotation, nval's
+    -- right subtree (which absorbs val and lr) is taller than its left (ll).
+    | .balanced nval ll lr =>
+      insert_and_fix (.rightie nval ll (.leftie val lr r)) ctx
+
+  -- (3) Symmetric: was a rightie; inserted into the *right* child.
   | @Context.RRC α nc val l ctx => match node with
-    | .rightie nval rl rr => Zipper.mk nc.succ.succ (.balanced nval (.balanced val l rl) rr) ctx |>.zip_up
-    | .balanced nval rl rr => insert_and_fix (.leftie nval (.rightie val l rl) rr) ctx
+
+    -- Right-right: single left rotation.
+    | .rightie nval rl rr =>
+      Zipper.mk nc.succ.succ (.balanced nval (.balanced val l rl) rr) ctx |>.zip_up
+
+    -- Right-left: double rotation (right on R, then left on P).
     | .leftie nval rl rr =>
-      -- Same here.
       Zipper.mk nc.succ.succ (match nc, rl with
         | _, .rightie x t1 t2 => .balanced x (.leftie val l t1) (.balanced nval t2 rr)
         | _, .leftie x t1 t2 => .balanced x (.balanced val l t1) (.rightie nval t2 rr)
         | _, .balanced x t1 t2 => .balanced x (.balanced val l t1) (.balanced nval t2 rr)
         : AVLNode α (nc + 2)
       ) ctx |>.zip_up
-  | .BLC val r ctx => insert_and_fix (.leftie val node r) ctx
-  | .BRC val l ctx => insert_and_fix (.rightie val l node) ctx
+
+    -- Right-balanced: symmetric to left-balanced.
+    | .balanced nval rl rr =>
+      insert_and_fix (.leftie nval (.rightie val l rl) rr) ctx
+
 
 def AVLTree.insert [Ord α] (tree: AVLTree α) (a: α) : AVLTree α :=
   match tree.unzip.zip_to a with
@@ -274,7 +344,140 @@ def AVLTree.insert [Ord α] (tree: AVLTree α) (a: α) : AVLTree α :=
 #eval AVLTree.mk 0 .nil |>.insert 3 |>.insert 5 |>.insert 4
 
 -- ^^^ The above basically is a (insert-only) definition of a AVL Tree. ^^^
+
+-- Zip to leftmost child of current subtree.
+def Zipper.zip_to_smallest (z : Zipper α) : Zipper α :=
+  match h : z.go_left with
+  | none => z
+  | some lz =>
+    match lz.n with
+    | 0     => z              -- left child is nil; z is already the minimum
+    | _ + 1 =>
+      have : lz.n < z.n := by simp_all [go_left_n_lt]
+      lz.zip_to_smallest
+termination_by z.n
+
+-- Go up until we find an ancestor node for which we are in the left subtree.
+-- Returns that ancestor (not the node we started from).
+def Zipper.zip_to_first_left_parent (z : Zipper α) : Option (Zipper α) :=
+  match z.n, z.ctx with
+  | _, .root             => none
+  -- We came from the left, so return the parent (which is the first left parent).
+  | _, .BLC _ _ _ | _, .RLC _ _ _ | _, .LLC _ _ _ => z.go_up
+  -- We came from the right, so keep searching
+  | _, _ =>
+    match h : z.go_up with
+    | none       => none
+    | some upper =>
+      have : upper.ctx.depth < z.ctx.depth := zipper_go_up_ctx_depth_lt z h.symm
+      upper.zip_to_first_left_parent
+termination_by z.ctx.depth
+
+def Zipper.zip_to_successor (z : Zipper α) : Option (Zipper α) :=
+  match z.go_right with
+  | some rz => some rz.zip_to_smallest  -- in-order successor = leftmost in right subtree
+  | none    => z.zip_to_first_left_parent
+
+-- This is called 'fixContext' in the original blog post
+def Context.replace_val [BEq α] (old new_val : α) : Context α n → Context α n
+  | .root => .root
+  | .BLC v r c => .BLC (if v == old then new_val else v) r (c.replace_val old new_val)
+  | .BRC v l c => .BRC (if v == old then new_val else v) l (c.replace_val old new_val)
+  | .LLC v r c => .LLC (if v == old then new_val else v) r (c.replace_val old new_val)
+  | .LRC v l c => .LRC (if v == old then new_val else v) l (c.replace_val old new_val)
+  | .RLC v r c => .RLC (if v == old then new_val else v) r (c.replace_val old new_val)
+  | .RRC v l c => .RRC (if v == old then new_val else v) l (c.replace_val old new_val)
+
+def rebalance (node : AVLNode α n) (ctx : Context α n.succ) : AVLTree α :=
+  match ctx with
+  | .root => AVLTree.from_node node
+
+  -- Was balanced, deleted from left → becomes rightie (height unchanged → stop)
+  | .BLC val right parent_ctx =>
+    Zipper.mk n.succ.succ (.rightie val node right) parent_ctx |>.zip_up
+
+  -- Was balanced, deleted from right → becomes leftie (height unchanged → stop)
+  | .BRC val left parent_ctx =>
+    Zipper.mk n.succ.succ (.leftie val left node) parent_ctx |>.zip_up
+
+  -- Was leftie, deleted from left → becomes balanced (height shrinks → propagate)
+  | .LLC val right parent_ctx =>
+    rebalance (.balanced val node right) parent_ctx
+
+  -- Was rightie, deleted from right → becomes balanced (height shrinks → propagate)
+  | .RRC val left parent_ctx =>
+    rebalance (.balanced val left node) parent_ctx
+
+  | .LRC val left parent_ctx => match left with
+    -- Left-left: single right rotation (height shrinks → recurse)
+    | .leftie nval ll lr =>
+      rebalance (.balanced nval ll (.balanced val lr node)) parent_ctx
+
+    -- Balanced sibling: right rotation (height unchanged → stop)
+    | .balanced nval ll lr =>
+      Zipper.mk n.succ.succ.succ (.rightie nval ll (.leftie val lr node)) parent_ctx |>.zip_up
+
+    -- Left-right: double rotation (height shrinks → recurse)
+    | .rightie nval ll lr =>
+      rebalance (match n, lr with
+        | _, .leftie x t1 t2 => .balanced x (.balanced nval ll t1) (.rightie val t2 node)
+        | _, .rightie x t1 t2 => .balanced x (.leftie nval ll t1) (.balanced val t2 node)
+        | _, .balanced x t1 t2 => .balanced x (.balanced nval ll t1) (.balanced val t2 node)
+        : AVLNode α n.succ.succ) parent_ctx
+
+  | .RLC val right parent_ctx => match right with
+    -- Right-right: single left rotation (height shrinks → recurse)
+    | .rightie nval rl rr =>
+      rebalance (.balanced nval (.balanced val node rl) rr) parent_ctx
+
+    -- Balanced sibling: left rotation (height unchanged → stop)
+    | .balanced nval rl rr =>
+      Zipper.mk n.succ.succ.succ (.leftie nval (.rightie val node rl) rr) parent_ctx |>.zip_up
+
+    -- Right-left: double rotation (height shrinks → recurse)
+    | .leftie nval rl rr =>
+      rebalance (match n, rl with
+        | _, .rightie x t1 t2 => .balanced x (.leftie val node t1) (.balanced nval t2 rr)
+        | _, .leftie x t1 t2 => .balanced x (.balanced val node t1) (.rightie nval t2 rr)
+        | _, .balanced x t1 t2 => .balanced x (.balanced val node t1) (.balanced nval t2 rr)
+        : AVLNode α n.succ.succ) parent_ctx
+termination_by ctx.depth
+decreasing_by
+  all_goals
+  simp_all[Context.depth]
+
+def deleteBST [BEq α] (z : Zipper α) : AVLTree α :=
+  let ⟨zn, tree, ctx⟩ := z
+  match tree with
+  | .balanced _ .nil .nil => rebalance .nil ctx
+  | .rightie _ .nil r     => rebalance r   ctx
+  | .leftie  _ l   .nil   => rebalance l   ctx
+  | _ =>
+    match z.value?, z.zip_to_successor with
+    | some k, some sz =>
+      match sz.value? with
+      | some k' =>
+        let ⟨szn, sz_tree, sz_ctx⟩ := sz
+        match szn, sz_tree with
+        | _, .balanced _ .nil .nil => rebalance .nil (sz_ctx.replace_val k k')
+        | _, .rightie  _ .nil r    => rebalance r    (sz_ctx.replace_val k k')
+        | _, _ => panic! "in-order successor cannot have a left child"
+      | none => panic! "successor must be non-nil"
+    | _, _ => panic! "non-nil node has no value or no successor"
+
+def AVLTree.delete [Ord α] [BEq α] (tree : AVLTree α) (a : α) : AVLTree α :=
+  match tree.unzip.zip_to a with
+  |  z => match z.n, z.tree with
+    | _, .nil => tree   -- not found, return unchanged
+    | _, _    => deleteBST z
+
+-- Things that EXTEND the original blog post:
 -- Everything below are random convenience functions, helpers, and some ideas towards correctness proofs..
+
+
+
+
+
 
 -- probably not super efficient since the zipper "remembers" (and thus requires space for) the nodes it traversed.
 def AVLNode.contains [Ord α] (a: α) (node: AVLNode α n) : Bool :=
@@ -297,6 +500,23 @@ def AVLNode.to_list  (node: AVLNode α n) : List α :=
 def AVLTree.to_list (tree: AVLTree α) : List α := tree.node.to_list
 
 #eval AVLTree.mk 0 .nil |>.insert 3 |>.insert 5 |>.insert 4 |>.insert 1 |>.to_list
+
+def t := AVLTree.mk 0 .nil |>.insert 4 |>.insert 2 |>.insert 6 |>.insert 1 |>.insert 3 |>.insert 5 |>.insert 7
+-- Sanity check: sorted order
+#eval t.to_list                          -- [1, 2, 3, 4, 5, 6, 7]
+-- Delete not found → unchanged
+#eval (t.delete 99).to_list             -- [1, 2, 3, 4, 5, 6, 7]
+-- Delete a leaf
+#eval (t.delete 1).to_list              -- [2, 3, 4, 5, 6, 7]
+-- Delete a node with one child
+#eval (t.delete 6).to_list              -- [1, 2, 3, 4, 5, 7]
+-- Delete the root (two children → replaced by in-order successor 5)
+#eval (t.delete 4).to_list              -- [1, 2, 3, 5, 6, 7]
+-- Chain of deletes
+#eval (t.delete 4 |>.delete 2 |>.delete 6).to_list   -- [1, 3, 5, 7]
+-- Delete down to empty
+#eval (t.delete 1 |>.delete 2 |>.delete 3 |>.delete 4 |>.delete 5 |>.delete 6 |>.delete 7).to_list  -- []
+
 
 -- TODO: With this we could prove the ordering and set properties of an AVL Tree.
 
